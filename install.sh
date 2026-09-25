@@ -34,15 +34,21 @@ command -v curl >/dev/null || die "curl is required"
 # The checksum tool differs by platform; the format of SHA256SUMS does not.
 if command -v sha256sum >/dev/null; then SHA256="sha256sum"; else SHA256="shasum -a 256"; fi
 
+# USERA_RELEASES_URL names a mirror instead of GitHub: a directory serving
+# latest.json (GitHub's release shape; only tag_name is read here) and
+# <tag>/<asset> + <tag>/SHA256SUMS. `usera update` reads the same variable.
+MIRROR="${USERA_RELEASES_URL:-}"
+MIRROR="${MIRROR%/}"
+if [ -n "$MIRROR" ]; then LATEST="$MIRROR/latest.json"; else LATEST="https://api.github.com/repos/$REPO/releases/latest"; fi
 TAG="${USERA_VERSION:-}"
 if [ -z "$TAG" ]; then
-  TAG="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
+  TAG="$(curl -fsSL "$LATEST" \
     | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)"
-  [ -n "$TAG" ] || die "could not read the latest release from GitHub"
+  [ -n "$TAG" ] || die "could not read the latest release from $LATEST"
 fi
 VERSION="${TAG#v}"
 ASSET="usera-$VERSION-$OS-$ARCH.tar.gz"
-BASE="https://github.com/$REPO/releases/download/$TAG"
+if [ -n "$MIRROR" ]; then BASE="$MIRROR/$TAG"; else BASE="https://github.com/$REPO/releases/download/$TAG"; fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -59,7 +65,16 @@ mkdir -p "$BIN_DIR"
 # The tarball holds one directory; strip it so the binaries land in bin/.
 tar -xzf "$TMP/$ASSET" -C "$TMP" && SRC="$TMP/usera-$VERSION-$OS-$ARCH"
 rm -rf "$BIN_DIR/Usera.app"
-cp "$SRC/usera" "$SRC/userad" "$BIN_DIR/"
+if [ "$OS" = "linux" ]; then
+  # Linux refuses to write over a running executable ("Text file busy"), and
+  # userad is running on any machine being updated: copy each binary beside
+  # it and rename it into place, as `usera update` does.
+  for b in usera userad; do
+    cp "$SRC/$b" "$BIN_DIR/.$b.new" && mv -f "$BIN_DIR/.$b.new" "$BIN_DIR/$b"
+  done
+else
+  cp "$SRC/usera" "$SRC/userad" "$BIN_DIR/"
+fi
 [ -d "$SRC/Usera.app" ] && cp -R "$SRC/Usera.app" "$BIN_DIR/Usera.app"
 chmod 755 "$BIN_DIR/usera" "$BIN_DIR/userad"
 # A curl download carries no quarantine flag, but a browser download of this
